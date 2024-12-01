@@ -6,8 +6,10 @@
 #define NOTHING 200
 #define MARGIN 100
 
-uint16_t barcode = 0;
-void enter_buffer(bool input);
+#define MAX_BARCODE_TIME 1000
+
+uint16_t barcode = UINT16_MAX;
+
 void setup() {
   // put your setup code here, to run once:
   pinMode(A0, INPUT);
@@ -19,6 +21,8 @@ bool value_changed = false;
 uint16_t min_value = 1024;
 bool reading_bit = false;
 bool seen_white = false;
+uint16_t bar_counter = 0;
+uint32_t barcode_timeout = 0;
 
 uint32_t time = 0;
 #define DELAY 1
@@ -28,17 +32,75 @@ void check_barcode() {
   uint16_t tmp_barcode = barcode & 0b1111111111111;
   // check where is the start
   Serial.print("barcode: ");
-  for (int i = 0; i < 16; i++) {
-    Serial.print((barcode >> i) & 1);
+  for (int i = 12; i >= 0; i--) {
+    Serial.print((tmp_barcode >> i) & 1);
+  }
+  Serial.print(" ");
+  if (bar_counter < 13) {
+    Serial.println("Not enough bars seen");
+    return;
+  }
+  if ((tmp_barcode & 0b111) == 0) {
+    // first three bits are zero
+    // could be valid barcode
+    // swap order
+
+    Serial.print("valid ");
+  } else if (((tmp_barcode >> 10) & 0b111) == 0) {
+    // last three bits are zero
+    // could be valid barcode
+    Serial.print("reversed ");
+    uint16_t reversed_barcode = 0;
+    for (int i = 0; i < 13; i++) {
+      if (tmp_barcode & (1 << i)) {
+        reversed_barcode |= 1 << ((13 - 1) - i);
+      }
+    }
+    tmp_barcode = reversed_barcode;
+  } else {
+    Serial.print(" not valid");
+  }
+
+  tmp_barcode = tmp_barcode >> 3;
+  for (int i = 12; i >= 0; i--) {
+    Serial.print((tmp_barcode >> i) & 1);
+  }
+  Serial.print(" ");
+
+  // Verify checksum bits
+  uint8_t count = 0;
+  for (int i = 3; i < 10; i++) {
+    if (((tmp_barcode >> i) & 0b1) == 1) {
+      count++;
+    }
+  }
+  Serial.print(count);
+  count %= 2;
+  if (((tmp_barcode >> 7) & 0b1) == count) {
+    Serial.print(" pass1");
+    if ((((tmp_barcode >> 8) & 0b1) ^ count) == 1) {
+      Serial.print(" pass2");
+      Serial.print(tmp_barcode >> 9);
+      if (((tmp_barcode >> 9) & 0b1) == 1) {
+        Serial.print(" xor valid");
+        barcode = UINT16_MAX;
+        bar_counter = 0;
+        barcode_timeout = millis();
+      }
+    }
   }
   Serial.println();
-  return;
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
   if (time + DELAY > millis()) {
     return;
+  }
+  if (barcode_timeout + MAX_BARCODE_TIME < millis() && bar_counter > 0) {
+    Serial.println("reset bar count");
+    bar_counter = 0;
+    barcode = UINT16_MAX;
   }
   time = millis();
   uint16_t sensor_value = analogRead(A0);
@@ -62,13 +124,14 @@ void loop() {
         // wide stripe
         // Serial.println("1");
         barcode = barcode << 1 | 1;
-        check_barcode();
       } else if (min_value < HIGH_LEVEL) {
         // small stripe
         // Serial.println("0");
         barcode = barcode << 1;
-        check_barcode();
       }
+      barcode_timeout = millis();
+      bar_counter++;
+      check_barcode();
       // reset values
       reading_bit = false;
       min_value = MAX_LEVEL;
